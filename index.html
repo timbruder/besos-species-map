@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Besos River Mouth Interactive Species Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap">
+<style>
+/* Layout: one zoomable grey canvas; four yellow organic fields packed edge to edge; header top-left, legend bottom-right, species card bottom-left. Single deliberate light look. */
+:root{
+  --canvas:#EFEFEB; --dot:rgba(19,36,18,.13);
+  --field:#FEFFDC;
+  --ink:#132412; --olive:#324D00; --lime:#E3E100; --orange:#FF6925;
+  --muted:rgba(19,36,18,.55);
+  --font:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  color-scheme:light;
+}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--canvas);color:var(--ink);font-family:var(--font);-webkit-font-smoothing:antialiased}
+*{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+img{-webkit-user-drag:none}
+#stage{position:fixed;inset:0;overflow:hidden;cursor:grab;touch-action:none;
+  background-color:var(--canvas);
+  background-image:radial-gradient(circle, var(--dot) 1.1px, transparent 1.4px);}
+#stage.panning{cursor:grabbing}
+#lines{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+
+/* species nodes */
+.node{position:absolute;left:0;top:0;padding:0;margin:0;border:0;background:none;cursor:pointer;font:inherit;color:inherit;
+  transform-origin:50% 50%;will-change:transform,opacity;touch-action:none}
+.node img{display:block;width:100%;height:100%;object-fit:contain;transition:transform .35s cubic-bezier(.34,1.56,.64,1),filter .3s ease;pointer-events:none}
+.node:hover img,.node:focus-visible img{transform:scale(1.07) rotate(-2deg)}
+.node.dragging{cursor:grabbing;z-index:3}
+.node.dragging img{transform:scale(1.12) rotate(3deg);filter:drop-shadow(0 14px 14px rgba(19,36,18,.25))}
+.node:focus-visible{outline:none}
+.node:focus-visible .pill{box-shadow:0 0 0 3px var(--lime)}
+.pill{position:absolute;left:50%;top:88%;transform:translateX(-50%);white-space:nowrap;
+  font-size:21px;font-weight:700;letter-spacing:.005em;line-height:1;padding:8px 20px;border-radius:999px;
+  background:var(--g-bg);color:var(--g-fg);box-shadow:inset 0 0 0 1.5px var(--g-ol,transparent);transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s ease}
+.node:hover .pill{transform:translateX(-50%) scale(1.08)}
+.node.indicator .pill{font-size:28px;padding:10px 28px}
+.node.mm-open .pill{box-shadow:inset 0 0 0 1.5px var(--g-ol,transparent),0 0 0 4px var(--orange)}
+.node.selected .pill{box-shadow:inset 0 0 0 1.5px var(--g-ol,transparent),0 0 0 4px var(--lime)}
+
+.heading{position:absolute;left:0;top:0;font-weight:700;font-size:44px;letter-spacing:-.01em;color:var(--ink);white-space:nowrap;
+  display:flex;align-items:center;gap:10px;pointer-events:none;will-change:opacity,transform}
+.heading svg{width:38px;height:38px;flex:none}
+
+/* text mind map */
+.mm{position:absolute;left:0;top:0;white-space:nowrap;pointer-events:none;will-change:transform,opacity}
+.mm.head{font-size:18px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--orange);
+  background:var(--canvas);padding:4px 10px;border-radius:999px}
+.mm.item{font-size:22px;font-weight:500;color:var(--ink);background:rgba(254,255,220,.92);padding:3px 9px;border-radius:7px}
+
+/* header */
+header{position:fixed;left:24px;top:calc(18px + env(safe-area-inset-top,0px));display:flex;align-items:center;gap:14px;z-index:5;pointer-events:none}
+header .logo{width:48px;height:48px;color:var(--orange);flex:none}
+header h1{margin:0;font-size:22px;font-weight:400;color:var(--orange);letter-spacing:-.01em;line-height:1.15;text-wrap:balance}
+header h1 strong{font-weight:700}
+#hint{position:fixed;left:24px;top:calc(80px + env(safe-area-inset-top,0px));z-index:5;margin:0;font-size:13px;color:var(--muted);max-width:46ch;line-height:1.45;
+  transition:opacity .6s ease,transform .6s ease;pointer-events:none}
+#hint.gone{opacity:0;transform:translateY(-6px)}
+#hint b{color:var(--ink);font-weight:600}
+
+/* legend */
+#legend{position:fixed;right:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:5;display:grid;grid-template-columns:auto auto;gap:7px 12px;align-items:center;
+  font-size:13px;color:var(--ink);background:rgba(239,239,235,.8);backdrop-filter:blur(4px);padding:10px 12px;border-radius:12px;pointer-events:none}
+#legend .sw{width:84px;height:12px;border-radius:999px;background:var(--g-bg);box-shadow:inset 0 0 0 1.5px var(--g-ol,transparent)}
+
+/* species card */
+#card{position:fixed;left:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));width:min(360px,calc(100vw - 48px));max-height:calc(100% - 150px);z-index:10;
+  display:flex;flex-direction:column;border-radius:10px;overflow:hidden;background:var(--g-bg);color:var(--g-fg);box-shadow:inset 0 0 0 2px var(--g-ol,transparent),0 18px 40px rgba(19,36,18,.22);
+  opacity:0;transform:translateY(28px) scale(.96);pointer-events:none;transition:opacity .35s ease,transform .5s cubic-bezier(.34,1.56,.64,1),background-color .4s ease,color .4s ease}
+#card.show{opacity:1;transform:none;pointer-events:auto}
+#card .photo{position:relative;margin:8px 8px 0;border-radius:6px;overflow:hidden;flex:none;background:rgba(0,0,0,.08)}
+#card .photo img{display:block;width:100%;height:auto;max-height:220px;object-fit:cover}
+#card .close{position:absolute;right:8px;top:8px;width:30px;height:30px;border-radius:50%;border:0;background:#fff;color:#132412;font-size:18px;line-height:30px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.2);transition:transform .25s cubic-bezier(.34,1.56,.64,1)}
+#card .close:hover{transform:scale(1.12) rotate(90deg)}
+#card .close:focus-visible,#card .webbtn:focus-visible{outline:3px solid var(--lime);outline-offset:2px}
+#card .body{padding:14px 18px 16px;overflow-y:auto;min-height:0}
+#card h2{margin:0;font-size:24px;font-weight:700;letter-spacing:-.01em;line-height:1.15;text-wrap:balance}
+#card .sci{margin:4px 0 0;font-size:14px;opacity:.8}
+#card .chips{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}
+#card .chip{font-size:12px;font-weight:600;padding:5px 11px;border-radius:999px;border:1.5px solid currentColor}
+#card .chip.role{background:var(--orange);border-color:var(--orange);color:#fff}
+#card .desc{margin:12px 0 0;font-size:15px;line-height:1.5;max-width:60ch}
+#card dl{margin:14px 0 0;display:grid;gap:8px;font-size:13.5px;line-height:1.4}
+#card dt{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.7}
+#card dd{margin:2px 0 0}
+#card .webbtn{margin-top:16px;width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;border:0;cursor:pointer;
+  font:600 14px var(--font);padding:12px 14px;border-radius:999px;background:var(--orange);color:#fff;transition:transform .25s cubic-bezier(.34,1.56,.64,1)}
+#card .webbtn:hover{transform:scale(1.03)}
+#card .webbtn .arr{transition:transform .25s ease}
+#card .webbtn:hover .arr{transform:translateX(4px)}
+#card .soon{margin:10px 0 0;font-size:13px;line-height:1.45}
+#card .soon.wiggle{animation:wig .5s ease}
+@keyframes wig{0%,100%{transform:none}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+#card .foot{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-top:14px}
+#card .credit{margin:0;font-size:11px;line-height:1.4;opacity:.7;min-width:0}
+#card .credit a{color:inherit}
+#card .cardlogo{width:36px;height:36px;flex:none;color:var(--g-fg)}
+
+@media (max-width:760px){
+  header h1{font-size:17px} header .logo{width:38px;height:38px}
+  header{left:16px}
+  #hint{top:calc(66px + env(safe-area-inset-top,0px));font-size:12px;right:16px;left:16px}
+  #legend{right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));grid-template-columns:auto auto auto auto;font-size:11px;gap:5px 7px;padding:8px 10px}
+  #legend .sw{width:26px;height:10px}
+  #card{left:12px;right:12px;width:auto;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-height:70%}
+}
+@media (prefers-reduced-motion:reduce){
+  .node img,.pill,#card,#card .close,#card .webbtn{transition:none}
+}
+</style>
+</head>
+<body>
+
+
+<div id="stage" aria-label="Species map canvas">
+  <canvas id="lines"></canvas>
+  <div id="world"></div>
+</div>
+
+<header>
+  <span class="logo" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 642 642"><path fill="currentColor" fill-rule="evenodd" d="M61,491 L60,492 L55,492 L54,493 L48,494 L33,501 L26,506 L15,517 L9,526 L5,534 L5,536 L2,543 L1,552 L0,553 L0,570 L1,571 L2,580 L3,581 L5,589 L9,597 L16,607 L25,616 L35,623 L43,627 L45,627 L52,630 L61,631 L62,632 L79,632 L80,631 L89,630 L90,629 L98,627 L106,623 L115,617 L126,606 L132,597 L136,589 L136,587 L138,584 L138,581 L140,577 L140,572 L141,571 L141,552 L140,551 L140,546 L139,545 L139,542 L138,541 L137,536 L131,524 L126,517 L115,506 L108,501 L96,495 L94,495 L90,493 L81,492 L80,491Z M560,10 L559,11 L555,11 L554,12 L551,12 L550,13 L545,14 L533,20 L526,25 L515,36 L510,43 L505,53 L505,55 L503,58 L503,61 L501,65 L501,70 L500,71 L500,89 L501,90 L502,99 L503,100 L505,108 L509,116 L516,126 L525,135 L535,142 L543,146 L545,146 L552,149 L561,150 L562,151 L579,151 L580,150 L589,149 L590,148 L598,146 L606,142 L616,135 L625,126 L632,116 L636,108 L636,106 L639,99 L640,91 L641,90 L641,71 L640,70 L640,65 L639,64 L639,61 L638,60 L637,55 L631,43 L626,36 L615,25 L608,20 L596,14 L594,14 L590,12 L582,11 L581,10Z M68,44 L59,53 L58,53 L44,68 L44,69 L37,77 L26,94 L17,112 L17,114 L14,119 L13,124 L11,127 L11,130 L10,131 L10,133 L8,137 L8,140 L6,144 L6,148 L5,149 L4,158 L3,159 L3,164 L2,165 L1,184 L0,185 L0,467 L142,467 L142,180 L143,179 L144,169 L145,168 L146,163 L148,160 L148,158 L150,156 L153,150 L161,141 L168,136 L176,132 L178,132 L182,130 L186,130 L187,129 L205,129 L206,130 L210,130 L224,136 L231,141 L236,146 L244,158 L244,160 L246,163 L246,165 L248,169 L248,172 L249,173 L249,179 L250,180 L250,460 L251,461 L251,471 L252,472 L252,478 L253,479 L253,484 L254,485 L255,494 L256,495 L257,502 L258,503 L259,509 L260,510 L261,515 L263,518 L264,523 L278,551 L292,571 L298,577 L298,578 L320,599 L347,617 L368,627 L370,627 L373,629 L375,629 L385,633 L388,633 L392,635 L400,636 L405,638 L417,639 L418,640 L427,640 L428,641 L464,641 L465,640 L473,640 L474,639 L486,638 L491,636 L495,636 L496,635 L503,634 L504,633 L518,629 L526,625 L528,625 L548,615 L550,613 L553,612 L562,606 L575,595 L576,595 L600,570 L614,550 L617,543 L619,541 L623,533 L623,531 L626,526 L629,516 L631,513 L631,510 L634,503 L634,500 L635,499 L635,496 L637,491 L638,481 L639,480 L640,465 L641,464 L641,175 L500,175 L500,456 L499,457 L499,466 L498,467 L496,477 L494,480 L494,482 L488,492 L478,502 L468,508 L466,508 L459,511 L455,511 L454,512 L438,512 L437,511 L433,511 L432,510 L426,509 L418,505 L412,501 L405,494 L400,487 L396,479 L396,477 L394,473 L394,470 L393,469 L393,465 L392,464 L392,190 L391,189 L391,175 L390,174 L390,166 L389,165 L389,160 L388,159 L388,154 L386,149 L386,145 L385,144 L383,134 L382,133 L380,125 L378,122 L377,117 L364,91 L351,72 L326,46 L325,46 L312,35 L303,30 L301,28 L296,26 L294,24 L275,15 L273,15 L270,13 L268,13 L258,9 L255,9 L254,8 L244,6 L243,5 L233,4 L232,3 L227,3 L226,2 L219,2 L218,1 L201,1 L200,0 L192,0 L191,1 L174,1 L173,2 L159,3 L158,4 L154,4 L153,5 L149,5 L148,6 L137,8 L136,9 L122,13 L114,17 L112,17 L94,26 L77,37 L69,44Z"/></svg></span>
+  <h1><strong>Besos River Mouth</strong> Interactive Species Map</h1>
+</header>
+<p id="hint"></p>
+
+<div id="legend" aria-label="Legend"></div>
+
+<aside id="card" aria-live="polite" aria-hidden="true">
+  <div class="photo"><img id="cPhoto" alt=""><button class="close" id="cClose" aria-label="Close">×</button></div>
+  <div class="body">
+    <h2 id="cName"></h2>
+    <p class="sci" id="cSci"></p>
+    <div class="chips" id="cChips"></div>
+    <p class="desc" id="cDesc"></p>
+    <dl id="cRel"></dl>
+    <button class="webbtn" id="cWeb"><span id="cWebLabel"></span><span class="arr">→</span></button>
+    <p class="soon" id="cSoon" hidden></p>
+    <div class="foot"><p class="credit" id="cCredit"></p><span class="cardlogo" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 642 642"><path fill="currentColor" fill-rule="evenodd" d="M61,491 L60,492 L55,492 L54,493 L48,494 L33,501 L26,506 L15,517 L9,526 L5,534 L5,536 L2,543 L1,552 L0,553 L0,570 L1,571 L2,580 L3,581 L5,589 L9,597 L16,607 L25,616 L35,623 L43,627 L45,627 L52,630 L61,631 L62,632 L79,632 L80,631 L89,630 L90,629 L98,627 L106,623 L115,617 L126,606 L132,597 L136,589 L136,587 L138,584 L138,581 L140,577 L140,572 L141,571 L141,552 L140,551 L140,546 L139,545 L139,542 L138,541 L137,536 L131,524 L126,517 L115,506 L108,501 L96,495 L94,495 L90,493 L81,492 L80,491Z M560,10 L559,11 L555,11 L554,12 L551,12 L550,13 L545,14 L533,20 L526,25 L515,36 L510,43 L505,53 L505,55 L503,58 L503,61 L501,65 L501,70 L500,71 L500,89 L501,90 L502,99 L503,100 L505,108 L509,116 L516,126 L525,135 L535,142 L543,146 L545,146 L552,149 L561,150 L562,151 L579,151 L580,150 L589,149 L590,148 L598,146 L606,142 L616,135 L625,126 L632,116 L636,108 L636,106 L639,99 L640,91 L641,90 L641,71 L640,70 L640,65 L639,64 L639,61 L638,60 L637,55 L631,43 L626,36 L615,25 L608,20 L596,14 L594,14 L590,12 L582,11 L581,10Z M68,44 L59,53 L58,53 L44,68 L44,69 L37,77 L26,94 L17,112 L17,114 L14,119 L13,124 L11,127 L11,130 L10,131 L10,133 L8,137 L8,140 L6,144 L6,148 L5,149 L4,158 L3,159 L3,164 L2,165 L1,184 L0,185 L0,467 L142,467 L142,180 L143,179 L144,169 L145,168 L146,163 L148,160 L148,158 L150,156 L153,150 L161,141 L168,136 L176,132 L178,132 L182,130 L186,130 L187,129 L205,129 L206,130 L210,130 L224,136 L231,141 L236,146 L244,158 L244,160 L246,163 L246,165 L248,169 L248,172 L249,173 L249,179 L250,180 L250,460 L251,461 L251,471 L252,472 L252,478 L253,479 L253,484 L254,485 L255,494 L256,495 L257,502 L258,503 L259,509 L260,510 L261,515 L263,518 L264,523 L278,551 L292,571 L298,577 L298,578 L320,599 L347,617 L368,627 L370,627 L373,629 L375,629 L385,633 L388,633 L392,635 L400,636 L405,638 L417,639 L418,640 L427,640 L428,641 L464,641 L465,640 L473,640 L474,639 L486,638 L491,636 L495,636 L496,635 L503,634 L504,633 L518,629 L526,625 L528,625 L548,615 L550,613 L553,612 L562,606 L575,595 L576,595 L600,570 L614,550 L617,543 L619,541 L623,533 L623,531 L626,526 L629,516 L631,513 L631,510 L634,503 L634,500 L635,499 L635,496 L637,491 L638,481 L639,480 L640,465 L641,464 L641,175 L500,175 L500,456 L499,457 L499,466 L498,467 L496,477 L494,480 L494,482 L488,492 L478,502 L468,508 L466,508 L459,511 L455,511 L454,512 L438,512 L437,511 L433,511 L432,510 L426,509 L418,505 L412,501 L405,494 L400,487 L396,479 L396,477 L394,473 L394,470 L393,469 L393,465 L392,464 L392,190 L391,189 L391,175 L390,174 L390,166 L389,165 L389,160 L388,159 L388,154 L386,149 L386,145 L385,144 L383,134 L382,133 L380,125 L378,122 L377,117 L364,91 L351,72 L326,46 L325,46 L312,35 L303,30 L301,28 L296,26 L294,24 L275,15 L273,15 L270,13 L268,13 L258,9 L255,9 L254,8 L244,6 L243,5 L233,4 L232,3 L227,3 L226,2 L219,2 L218,1 L201,1 L200,0 L192,0 L191,1 L174,1 L173,2 L159,3 L158,4 L154,4 L153,5 L149,5 L148,6 L137,8 L136,9 L122,13 L114,17 L112,17 L94,26 L77,37 L69,44Z"/></svg></span></div>
+  </div>
+</aside>
+
+<script src="data/data.js"></script>
+<script>
+(() => {
+const D = window.BESOS_DATA;
+const SP = D.species;
+const G = Object.fromEntries(D.groups.map(g => [g.id, g]));
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const coarse = matchMedia('(pointer: coarse)').matches;
+
+const stage = document.getElementById('stage');
+const world = document.getElementById('world');
+const cv = document.getElementById('lines');
+const ctx = cv.getContext('2d');
+const hint = document.getElementById('hint');
+hint.innerHTML = coarse
+  ? '<b>Spread two fingers</b> on a yellow field to unfold its food web, <b>pinch</b> to fold it. Tap a species for its photo and connections. Hold and drag to rearrange. Tap the grey canvas to reset.'
+  : '<b>Scroll up</b> on a yellow field to unfold its food web, <b>scroll down</b> to fold it. Click a species for its photo and connections. Drag species or fields to rearrange. Click the grey canvas to reset.';
+
+// ---------- legend ----------
+const legend = document.getElementById('legend');
+D.groups.forEach(g => {
+  const sw = document.createElement('span'); sw.className = 'sw'; setGroupVars(sw, g.id);
+  const lb = document.createElement('span'); lb.textContent = g.label;
+  legend.append(sw, lb);
+});
+function setGroupVars(el, gid){
+  const g = G[gid]; el.style.setProperty('--g-bg', g.bg); el.style.setProperty('--g-fg', g.fg);
+  el.style.setProperty('--g-ol', g.outline || 'transparent');
+}
+
+// ---------- camera ----------
+const cam = {x:0, y:0, s:.4, tx:0, ty:0, ts:.4};
+let W = innerWidth, H = innerHeight, DPR = Math.min(devicePixelRatio || 1, 2);
+function resize(){ W = innerWidth; H = innerHeight; DPR = Math.min(devicePixelRatio || 1, 2); cv.width = W * DPR; cv.height = H * DPR; }
+resize();
+addEventListener('resize', () => { resize(); if (!webs.some(w => w.open)) fitStart(false); });
+const toWorld = (sx, sy) => [(sx - cam.x) / cam.s, (sy - cam.y) / cam.s];
+const pads = () => W < 760 ? {l:16, r:16, t:110, b:120} : {l:40, r:40, t:120, b:40};
+function fitBox(b, cap = 1.1){
+  const p = pads();
+  const s = Math.min((W - p.l - p.r) / (b[2] - b[0]), (H - p.t - p.b) / (b[3] - b[1]), cap);
+  cam.ts = s;
+  cam.tx = p.l + (W - p.l - p.r - (b[2] - b[0]) * s) / 2 - b[0] * s;
+  cam.ty = p.t + (H - p.t - p.b - (b[3] - b[1]) * s) / 2 - b[1] * s;
+}
+
+// ---------- webs, nodes ----------
+const IND_SIZE = 310, SIZE = 185, IND_BIG = 1.55, BASE_R = 400, GAP = 70;
+const webs = D.webs.map((w, wi) => ({
+  ...w, wi, open:false,
+  x:0, y:0, tx:0, ty:0, vx:0, vy:0, ox:0, oy:0,
+  rx: BASE_R, ry: BASE_R * .93, trx: BASE_R, try: BASE_R * .93, vrx:0, vry:0,
+  phase: wi * 1.7, nodes: [], links: [], headings: {}, groupNodes:{}
+}));
+const nodes = [], nodeByEl = new Map();
+
+function mkNode(web, id, size, key, note){
+  const s = SP[id], isInd = key === 'ind';
+  const el = document.createElement('button');
+  el.className = 'node' + (isInd ? ' indicator' : '');
+  el.style.width = el.style.height = size + 'px';
+  el.setAttribute('aria-label', s.common + ' – ' + s.scientific);
+  const img = document.createElement('img'); img.src = s.illustration; img.alt = ''; img.draggable = false;
+  const pill = document.createElement('span'); pill.className = 'pill'; pill.textContent = s.common;
+  setGroupVars(pill, s.group);
+  el.append(img, pill);
+  world.appendChild(el);
+  const n = {web, id, size, key, note, isInd, el, lx:0, ly:0, ux:0, uy:0,
+    px:0, py:0, vx:0, vy:0, tpx:0, tpy:0, sc: isInd ? IND_BIG : .2, vs:0, tsc: isInd ? IND_BIG : .2,
+    op: isInd ? 1 : 0, top: isInd ? 1 : 0, delayUntil:0, mm:null, pillW: s.common.length * 12 + 44};
+  el.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); nodeClick(n); } });
+  nodes.push(n); web.nodes.push(n); nodeByEl.set(el, n);
+  return n;
+}
+function pacSVG(){ return '<svg viewBox="0 0 26 26" aria-hidden="true"><path d="M13 13 L24 7 A12 12 0 1 0 24 19 Z" fill="#132412"/></svg>'; }
+function mkHeading(web, key, text){
+  const h = document.createElement('div'); h.className = 'heading';
+  const label = document.createElement('span'); label.textContent = text;
+  if (key === 'prey') { h.insertAdjacentHTML('beforeend', pacSVG()); h.append(label); }
+  else if (key === 'predators') { h.append(label); h.insertAdjacentHTML('beforeend', pacSVG()); }
+  else h.append(label);
+  world.appendChild(h);
+  web.headings[key] = {el:h, x:0, y:0, w: text.length * 25 + (key === 'prey' || key === 'predators' ? 50 : 0), op: key === 'ind' ? 1 : 0, top: key === 'ind' ? 1 : 0, center: key === 'ind'};
+}
+function arcPlace(list, centerDeg, ringR, step, cap, stretch){
+  const out = []; let i = 0, ring = 0;
+  while (i < list.length){
+    const c = Math.min(cap[ring] ?? cap[cap.length-1] + 2 * (ring - cap.length + 1), list.length - i);
+    const st = step[ring] ?? step[step.length-1] * .8;
+    const r = ringR[ring] ?? ringR[ringR.length-1] + 190 * (ring - ringR.length + 1);
+    for (let k = 0; k < c; k++, i++){
+      const a = (centerDeg + (k - (c - 1) / 2) * st) * Math.PI / 180;
+      out.push([Math.cos(a) * r * stretch, Math.sin(a) * r]);
+    }
+    ring++;
+  }
+  return out;
+}
+webs.forEach(web => {
+  const ind = mkNode(web, web.indicator, IND_SIZE, 'ind', '');
+  web.ind = ind;
+  mkHeading(web, 'ind', 'Indicator species');
+  const groups = [
+    ['shelter',     web.shelter,     -90, [470],           [21],         [6],       1.2,  'Shelter',     'shelter'],
+    ['predators',   web.predators,   180, [430, 620, 810], [26, 19, 15], [5, 7, 9], 1.25, 'Predators',   'eat'],
+    ['prey',        web.prey,          0, [430, 620, 810], [26, 19, 15], [5, 7, 9], 1.25, 'Prey',        'eat'],
+    ['competitors', web.competitors,  90, [470],           [23],         [6],       1.2,  'Competitors', 'compete'],
+  ];
+  groups.forEach(([key, list, deg, rr, st, cap, str, label, kind]) => {
+    const pos = arcPlace(list, deg, rr, st, cap, str);
+    web.groupNodes[key] = list.map((it, i) => {
+      const n = mkNode(web, it.id, SIZE, key, it.note);
+      n.lx = pos[i][0]; n.ly = pos[i][1];
+      if (kind === 'eat') web.links.push(key === 'prey' ? {a: ind, b: n, kind} : {a: n, b: ind, kind});
+      else web.links.push({a: n, b: ind, kind});
+      return n;
+    });
+    if (list.length){
+      mkHeading(web, key, label);
+      const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]), h = web.headings[key];
+      if (key === 'shelter'){ h.x = Math.min(...xs) - 70; h.y = Math.min(...ys) - 125; }
+      if (key === 'competitors'){ h.x = Math.min(...xs) - 70; h.y = Math.max(...ys) + 135; }
+      if (key === 'predators'){ h.x = Math.min(...xs) - 60; h.y = Math.min(...ys) - 135; }
+      if (key === 'prey'){ h.x = Math.max(...xs) - 120; h.y = Math.min(...ys) - 135; }
+    }
+  });
+  web.links.forEach((l, k) => { l.off = Math.random() * 6; l.bend = (k % 2 ? 1 : -1) * (0.15 + Math.random() * .08); });
+});
+// same species in several webs → connection
+const shared = {};
+nodes.forEach(n => { (shared[n.id] = shared[n.id] || []).push(n); });
+const sharedGroups = Object.values(shared).filter(list => list.length > 1);
+
+// ---------- open / fold ----------
+function applyTargets(web, stagger = true){
+  const now = performance.now(), open = web.open;
+  let order = 0;
+  ['shelter', 'prey', 'competitors', 'predators'].forEach(key => web.groupNodes[key].forEach(n => {
+    const was = n.top > 0;
+    n.top = open ? 1 : 0; n.tsc = open ? 1 : .2;
+    n.tpx = open ? n.lx + n.ux : 0; n.tpy = open ? n.ly + n.uy : 0;
+    n.delayUntil = now + (stagger ? (open ? (was ? 0 : order++ * 45) : order++ * 12) : 0);
+  }));
+  web.ind.tsc = open ? 1 : IND_BIG;
+  Object.entries(web.headings).forEach(([k, h]) => { if (k !== 'ind') h.top = open ? 1 : 0; });
+  if (open){
+    const vis = web.nodes.filter(n => !n.isInd);
+    const mx = Math.max(...vis.map(n => Math.abs(n.lx + n.ux))), my = Math.max(...vis.map(n => Math.abs(n.ly + n.uy)));
+    web.trx = Math.max(BASE_R, mx * .8 + 70); web.try = Math.max(BASE_R * .93, my * .8 + 70);
+  } else { web.trx = BASE_R; web.try = BASE_R * .93; }
+}
+function openWeb(web){
+  if (web.open) return;
+  web.open = true; applyTargets(web); layout(); fitBox(webBox(web, true));
+  hint.classList.add('gone');
+}
+function foldWeb(web){
+  if (!web.open) return;
+  web.open = false;
+  web.nodes.forEach(n => { if (n.mm) closeMindmap(n); });
+  if (current && current.web === web && !current.isInd) closeCard();
+  applyTargets(web); layout();
+  if (!webs.some(w => w.open)) fitStart();
+}
+function resetAll(){
+  webs.forEach(w => { w.ox = w.oy = 0; if (w.open){ w.open = false; w.nodes.forEach(n => { if (n.mm) closeMindmap(n); }); applyTargets(w); } });
+  closeCard(); layout(); fitStart();
+}
+
+// ---------- automatic packing: four fields in a 2×2 grid, edge to edge ----------
+function extent(web){ // distances from the field centre (target state), no mind maps
+  let l = web.trx * 1.1, r = web.trx * 1.1, t = web.try * 1.1, b = web.try * 1.1;
+  const indR = IND_SIZE / 2 * web.ind.tsc;
+  t = Math.max(t, indR + 120); b = Math.max(b, indR + 60);
+  web.nodes.forEach(n => {
+    if (n.isInd || !n.top) return;
+    const x = n.tpx, y = n.tpy, hw = Math.max(n.size / 2, n.pillW / 2) + 10;
+    l = Math.max(l, -(x - hw)); r = Math.max(r, x + hw); t = Math.max(t, -(y - n.size / 2 - 10)); b = Math.max(b, y + n.size / 2 + 40);
+  });
+  Object.entries(web.headings).forEach(([k, h]) => {
+    if (!h.top || k === 'ind') return;
+    l = Math.max(l, -h.x + 10); r = Math.max(r, h.x + h.w); t = Math.max(t, -(h.y - 40)); b = Math.max(b, h.y + 40);
+  });
+  return {l, r, t, b};
+}
+function layout(){
+  const [a, bb, c, d] = webs; // hedgehog, natterjack, swallow, lizard
+  const E = webs.map(extent);
+  const colGap = Math.max(E[0].r, E[2].r) + GAP + Math.max(E[1].l, E[3].l);
+  const rowGap = Math.max(E[0].b, E[1].b) + GAP + Math.max(E[2].t, E[3].t);
+  const stagger = 0.08 * colGap; // slight offset so the grid feels organic
+  const pos = [[0, 0], [colGap, stagger * .4], [stagger * .5, rowGap], [colGap + stagger * .3, rowGap + stagger * .2]];
+  webs.forEach((w, i) => { w.tx = pos[i][0] + w.ox; w.ty = pos[i][1] + w.oy; });
+}
+function webBox(w, useTarget){
+  const e = extent(w), x = useTarget ? w.tx : w.x, y = useTarget ? w.ty : w.y;
+  return [x - e.l, y - e.t, x + e.r, y + e.b];
+}
+function union(boxes){ return boxes.reduce((u, b) => [Math.min(u[0], b[0]), Math.min(u[1], b[1]), Math.max(u[2], b[2]), Math.max(u[3], b[3])], [Infinity, Infinity, -Infinity, -Infinity]); }
+function fitStart(){ fitBox(union(webs.map(w => webBox(w, true))), 2); }
+function contentBounds(){
+  const boxes = webs.map(w => webBox(w, true));
+  nodes.forEach(n => { if (n.mm) n.mm.items.forEach(it => { const x = n.web.tx + n.tpx + it.ox, y = n.web.ty + n.tpy + it.oy; boxes.push([x - 260, y - 40, x + 260, y + 40]); }); });
+  const u = union(boxes), mx = (u[2] - u[0]) * .06, my = (u[3] - u[1]) * .06;
+  return [u[0] - mx, u[1] - my, u[2] + mx, u[3] + my];
+}
+function clampCam(){
+  const b = contentBounds(), p = pads();
+  const minS = Math.min((W - p.l - p.r) / (b[2] - b[0]), (H - p.t - p.b) / (b[3] - b[1]));
+  if (cam.ts < minS) {
+    const k = minS / cam.ts, cx = W / 2, cy = H / 2;
+    cam.tx = cx - (cx - cam.tx) * k; cam.ty = cy - (cy - cam.ty) * k; cam.ts = minS;
+  }
+  const s = cam.ts;
+  const clamp = (v, a, c) => Math.min(Math.max(v, Math.min(a, c)), Math.max(a, c));
+  // content smaller than the screen: keep it centred so the view always looks full
+  if ((b[2] - b[0]) * s <= W - p.l - p.r) cam.tx = p.l + (W - p.l - p.r - (b[2] - b[0]) * s) / 2 - b[0] * s;
+  else cam.tx = clamp(cam.tx, W - p.r - b[2] * s, p.l - b[0] * s);
+  if ((b[3] - b[1]) * s <= H - p.t - p.b) cam.ty = p.t + (H - p.t - p.b - (b[3] - b[1]) * s) / 2 - b[1] * s;
+  else cam.ty = clamp(cam.ty, H - p.b - b[3] * s, p.t - b[1] * s);
+}
+
+// ---------- text mind maps ----------
+function nodeWorld(n){ return [n.web.x + n.px, n.web.y + n.py]; }
+function openMindmap(n){
+  const rel = SP[n.id].relations; if (!rel) return;
+  const plant = SP[n.id].group === 'plant';
+  const branches = [['Eats', rel.eats], ['Eaten by', rel.eatenBy], [plant ? 'Shelter for' : 'Lives in', rel.shelter]].filter(b => b[1] && b[1].length);
+  // outward direction: away from the field centre
+  let dx = n.lx + n.ux, dy = n.ly + n.uy, L = Math.hypot(dx, dy);
+  if (L < 1){ dx = 1; dy = 0; L = 1; } dx /= L; dy /= L;
+  const spread = branches.length === 3 ? [-58, 0, 58] : branches.length === 2 ? [-34, 34] : [0];
+  const items = [];
+  branches.forEach(([title, list], bi) => {
+    const a = Math.atan2(dy, dx) + spread[bi] * Math.PI / 180, bx = Math.cos(a), by = Math.sin(a);
+    const hx = bx * 215, hy = by * 215;
+    const head = mmLabel('head', title, hx, hy, 'c'); head.parent = null; items.push(head);
+    const side = Math.abs(bx) > .42;
+    list.forEach((t, i) => {
+      let ix, iy, anchor;
+      if (side){ ix = hx + bx * 95; iy = hy + (i - (list.length - 1) / 2) * 38 + by * 40; anchor = bx > 0 ? 'l' : 'r'; }
+      else { ix = hx + bx * 20; iy = hy + by * (62 + i * 38); anchor = 'c'; }
+      const it = mmLabel('item', t, ix, iy, anchor); it.parent = head; items.push(it);
+    });
+  });
+  n.mm = {items, t:0, target:1};
+  n.el.classList.add('mm-open');
+}
+function mmLabel(kind, text, ox, oy, anchor){
+  const el = document.createElement('div'); el.className = 'mm ' + kind; el.textContent = text;
+  el.style.opacity = '0'; world.appendChild(el);
+  return {el, ox, oy, anchor, kind};
+}
+function closeMindmap(n){ if (n.mm){ n.mm.target = 0; } n.el.classList.remove('mm-open'); }
+
+// ---------- clicks ----------
+function nodeClick(n){
+  if (n.isInd){ if (current === n) closeCard(); else openCard(n); return; }
+  if (n.mm && n.mm.target === 1){ closeMindmap(n); if (current === n) closeCard(); }
+  else { if (n.mm) { n.mm.items.forEach(i => i.el.remove()); n.mm = null; } openMindmap(n); openCard(n); }
+}
+
+// ---------- species card ----------
+const card = document.getElementById('card');
+let current = null;
+const names = list => list.map(n => SP[n.id].common).join(' · ');
+const cap = t => t.charAt(0).toUpperCase() + t.slice(1);
+function openCard(n){
+  const s = SP[n.id], g = G[s.group], web = n.web;
+  nodes.forEach(m => m.el.classList.toggle('selected', m === n));
+  setGroupVars(card, s.group);
+  const photo = document.getElementById('cPhoto'); photo.src = s.photo; photo.alt = 'Photo of ' + s.common;
+  document.getElementById('cName').textContent = s.common;
+  const sci = document.getElementById('cSci'); sci.innerHTML = '<i></i>'; sci.firstChild.textContent = s.scientific;
+  if (s.catalan) sci.append(' · ' + s.catalan);
+  const chips = document.getElementById('cChips'); chips.innerHTML = '';
+  const roleNames = {ind:'Indicator species', shelter:'Shelter', prey:'Prey', predators:'Predator', competitors:'Competitor'};
+  [[g.label.replace(/s$/, '').replace('Other invertebrate', 'Invertebrate'), ''], [roleNames[n.key], 'role']].forEach(([t, c]) => {
+    const e = document.createElement('span'); e.className = 'chip ' + c; e.textContent = t; chips.appendChild(e);
+  });
+  document.getElementById('cDesc').textContent = s.description;
+  const rel = document.getElementById('cRel'); rel.innerHTML = '';
+  const add = (dt, dd) => { if (!dd) return; const a = document.createElement('div'); const t = document.createElement('dt'); t.textContent = dt; const d = document.createElement('dd'); d.textContent = dd; a.append(t, d); rel.appendChild(a); };
+  const gn = web.groupNodes, indName = SP[web.indicator].common;
+  if (n.isInd){
+    add('Eats', names(gn.prey)); add('Eaten by', names(gn.predators));
+    add('Competes with', names(gn.competitors)); add('Shelter from', names(gn.shelter));
+  } else {
+    const roleLine = {prey:'Eaten by the ' + indName, predators: n.note ? cap(n.note) : 'Eats the ' + indName,
+      competitors: 'Competes with the ' + indName + (n.note ? ' · ' + n.note : ''), shelter: (n.note ? cap(n.note) : 'Shelter') + ' for the ' + indName}[n.key];
+    add('In this food web', roleLine);
+    const r = s.relations || {};
+    add('Eats', (r.eats || []).join(' · '));
+    add('Eaten by', (r.eatenBy || []).join(' · '));
+    add(s.group === 'plant' ? 'Shelter for' : 'Lives in', (r.shelter || []).join(' · '));
+    const others = (shared[n.id] || []).filter(m => m.web !== web).map(m => SP[m.web.indicator].common);
+    if (others.length) add('Also in the food web of', others.join(' · '));
+  }
+  const target = webs.find(w => w.indicator === n.id);
+  const btnLabel = document.getElementById('cWebLabel');
+  btnLabel.textContent = target ? (target.open ? 'Food web is open' : 'Open this food web') : 'Open the food web: ' + s.common;
+  const soon = document.getElementById('cSoon'); soon.hidden = true;
+  document.getElementById('cWeb').onclick = () => {
+    if (target){ openWeb(target); fitBox(webBox(target, true)); btnLabel.textContent = 'Food web is open'; }
+    else { soon.textContent = 'The food web of the ' + s.common + ' is coming soon. The map can keep growing from every species.'; soon.hidden = false; soon.classList.remove('wiggle'); void soon.offsetWidth; soon.classList.add('wiggle'); }
+  };
+  const c = s.photoCredit, cr = document.getElementById('cCredit');
+  cr.textContent = 'Photo: ' + c.author + ', ' + c.license + ' · ';
+  const a = document.createElement('a'); a.href = c.source; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Wikimedia Commons'; cr.appendChild(a);
+  if (c.location && !/not stated/.test(c.location)) cr.append(' · ' + c.location);
+  card.classList.add('show'); card.setAttribute('aria-hidden', 'false');
+  current = n;
+}
+function closeCard(){ card.classList.remove('show'); card.setAttribute('aria-hidden', 'true'); nodes.forEach(m => m.el.classList.remove('selected')); current = null; }
+document.getElementById('cClose').addEventListener('click', closeCard);
+['pointerdown', 'pointermove', 'pointerup'].forEach(t => card.addEventListener(t, ev => ev.stopPropagation()));
+addEventListener('keydown', ev => { if (ev.key === 'Escape'){ if (current) closeCard(); else resetAll(); } });
+
+// ---------- input: field hit test ----------
+function fieldAt(wx, wy){
+  return webs.find(w => ((wx - w.x) / (w.rx * 1.06)) ** 2 + ((wy - w.y) / (w.ry * 1.06)) ** 2 < 1);
+}
+function zoomAt(sx, sy, k){
+  const ns = Math.min(3, cam.ts * k);
+  const cx = (sx - cam.tx) / cam.ts, cy = (sy - cam.ty) / cam.ts;
+  cam.ts = ns; cam.tx = sx - cx * ns; cam.ty = sy - cy * ns;
+}
+
+// ---------- input: wheel (desktop) ----------
+let gesture = null; // one scroll gesture keeps its meaning while the camera moves
+stage.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  const now = performance.now();
+  const dy = ev.deltaY * (ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? 400 : 1);
+  if (!gesture || now - gesture.t > 320){
+    const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+    const f = fieldAt(wx, wy);
+    gesture = f ? {kind:'field', w:f, acc:0, fired:false} : {kind:'zoom'};
+  }
+  gesture.t = now;
+  if (gesture.kind === 'field'){
+    if (gesture.fired) return;
+    gesture.acc += -dy;
+    if (gesture.acc > 30){ gesture.fired = true; openWeb(gesture.w); }
+    else if (gesture.acc < -30){ gesture.fired = true; foldWeb(gesture.w); }
+    return;
+  }
+  zoomAt(ev.clientX, ev.clientY, Math.exp(-dy * (ev.ctrlKey ? .01 : .0015)));
+}, {passive:false});
+
+// ---------- input: pointers (click, drag species, drag fields, pan, pinch) ----------
+const ptrs = new Map();
+let act = null, pinch = null;
+stage.addEventListener('pointerdown', ev => {
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  stage.setPointerCapture(ev.pointerId);
+  ptrs.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+  if (ptrs.size === 2){ startPinch(); act = null; return; }
+  if (ptrs.size > 2) return;
+  const nodeEl = ev.target.closest && ev.target.closest('.node');
+  const n = nodeEl ? nodeByEl.get(nodeEl) : null;
+  const [wx, wy] = toWorld(ev.clientX, ev.clientY);
+  let kind = 'grey', w = null;
+  if (n && n.top) kind = n.isInd ? 'field' : 'node';
+  if (kind === 'field') w = n.web;
+  if (kind === 'grey'){ w = fieldAt(wx, wy); if (w) kind = 'field'; }
+  act = {kind, n, w, sx: ev.clientX, sy: ev.clientY, wx, wy, moved:false,
+    camx: cam.tx, camy: cam.ty, ox: w ? w.ox : 0, oy: w ? w.oy : 0, ux: n ? n.ux : 0, uy: n ? n.uy : 0, clickNode: n};
+});
+stage.addEventListener('pointermove', ev => {
+  if (!ptrs.has(ev.pointerId)) return;
+  ptrs.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
+  if (pinch){ movePinch(); return; }
+  if (!act) return;
+  const dx = ev.clientX - act.sx, dy = ev.clientY - act.sy;
+  if (!act.moved && Math.hypot(dx, dy) > (ev.pointerType === 'touch' ? 9 : 5)){
+    act.moved = true;
+    if (act.kind === 'grey') stage.classList.add('panning');
+    if (act.kind === 'node') act.n.el.classList.add('dragging');
+  }
+  if (!act.moved) return;
+  const wdx = dx / cam.s, wdy = dy / cam.s;
+  if (act.kind === 'grey'){ cam.tx = cam.x = act.camx + dx; cam.ty = cam.y = act.camy + dy; }
+  else if (act.kind === 'field'){
+    const w = act.w; w.ox = act.ox + wdx; w.oy = act.oy + wdy; layout(); w.x = w.tx; w.y = w.ty; w.vx = w.vy = 0;
+  } else if (act.kind === 'node'){
+    const n = act.n; n.ux = act.ux + wdx; n.uy = act.uy + wdy;
+    n.tpx = n.px = n.lx + n.ux; n.tpy = n.py = n.ly + n.uy; n.vx = n.vy = 0;
+  }
+});
+function endPtr(ev){
+  if (!ptrs.has(ev.pointerId)) return;
+  ptrs.delete(ev.pointerId);
+  if (pinch){ if (ptrs.size < 2) pinch = null; act = null; return; }
+  if (!act) return;
+  stage.classList.remove('panning');
+  if (act.n) act.n.el.classList.remove('dragging');
+  if (!act.moved && ev.type === 'pointerup'){
+    if (act.clickNode && act.clickNode.top) nodeClick(act.clickNode);
+    else if (act.kind === 'grey') resetAll();
+  } else if (act.kind === 'node' || act.kind === 'field'){ applyTargetsKeep(act.n ? act.n.web : act.w); }
+  act = null;
+}
+function applyTargetsKeep(web){ // update field size after a drag, without restaggering
+  if (!web.open) return;
+  const vis = web.nodes.filter(n => !n.isInd);
+  const mx = Math.max(...vis.map(n => Math.abs(n.lx + n.ux))), my = Math.max(...vis.map(n => Math.abs(n.ly + n.uy)));
+  web.trx = Math.max(BASE_R, mx * .8 + 70); web.try = Math.max(BASE_R * .93, my * .8 + 70);
+  layout();
+}
+stage.addEventListener('pointerup', endPtr);
+stage.addEventListener('pointercancel', endPtr);
+
+function pinchInfo(){
+  const [a, b] = [...ptrs.values()];
+  return {d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2};
+}
+function startPinch(){
+  if (act && act.n) act.n.el.classList.remove('dragging');
+  const p = pinchInfo(), [wx, wy] = toWorld(p.cx, p.cy), f = fieldAt(wx, wy);
+  pinch = {d0: p.d, cx0: p.cx, cy0: p.cy, s0: cam.ts, tx0: cam.tx, ty0: cam.ty, field: f, fired:false};
+}
+function movePinch(){
+  const p = pinchInfo(), r = p.d / pinch.d0;
+  if (pinch.field){
+    if (!pinch.fired && r > 1.22){ pinch.fired = true; openWeb(pinch.field); }
+    if (!pinch.fired && r < .8){ pinch.fired = true; foldWeb(pinch.field); }
+    return;
+  }
+  const ns = Math.min(3, pinch.s0 * r);
+  const wx = (pinch.cx0 - pinch.tx0) / pinch.s0, wy = (pinch.cy0 - pinch.ty0) / pinch.s0;
+  cam.ts = cam.s = ns; cam.tx = cam.x = p.cx - wx * ns; cam.ty = cam.y = p.cy - wy * ns;
+}
+
+// ---------- drawing ----------
+function blobPath(w, t){
+  const N = 72, pts = [];
+  for (let i = 0; i < N; i++){
+    const a = i / N * Math.PI * 2;
+    const wob = 1 + .075 * Math.sin(3 * a + w.phase + t * .35) + .045 * Math.sin(5 * a - w.phase * 1.3 - t * .25) + .03 * Math.sin(2 * a + w.phase * 2);
+    pts.push([w.x + Math.cos(a) * w.rx * wob, w.y + Math.sin(a) * w.ry * wob]);
+  }
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++){
+    const p = pts[i % N], q = pts[(i + 1) % N], m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+    if (i === 0) ctx.moveTo(m[0], m[1]); else ctx.quadraticCurveTo(p[0], p[1], m[0], m[1]);
+  }
+  ctx.closePath();
+}
+function curveBetween(A, B, bend){
+  let [x1, y1] = nodeWorld(A), [x2, y2] = nodeWorld(B);
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+  const ra = A.size * .34 * A.sc, rb = B.size * .34 * B.sc;
+  x1 += dx / len * ra; y1 += dy / len * ra; x2 -= dx / len * rb; y2 -= dy / len * rb;
+  return [x1, y1, (x1 + x2) / 2 - dy * bend, (y1 + y2) / 2 + dx * bend, x2, y2];
+}
+function sample(c, n){
+  const [x1, y1, mx, my, x2, y2] = c, pts = [[x1, y1, 0]]; let L = 0;
+  for (let i = 1; i <= n; i++){
+    const t = i / n, u = 1 - t;
+    const x = u*u*x1 + 2*u*t*mx + t*t*x2, y = u*u*y1 + 2*u*t*my + t*t*y2;
+    L += Math.hypot(x - pts[i-1][0], y - pts[i-1][1]); pts.push([x, y, L]);
+  }
+  return pts;
+}
+function at(pts, d){
+  let i = 1; while (i < pts.length - 1 && pts[i][2] < d) i++;
+  const a = pts[i-1], b = pts[i], f = (d - a[2]) / ((b[2] - a[2]) || 1);
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, Math.atan2(b[1] - a[1], b[0] - a[0])];
+}
+const INK = '#132412', ORANGE = '#FF6925';
+function drawLink(l, now){
+  const op = Math.min(l.a.op, l.b.op); if (op < .02) return;
+  const c = curveBetween(l.a, l.b, l.bend);
+  ctx.globalAlpha = op;
+  if (l.kind === 'shelter' || l.kind === 'compete'){
+    ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.quadraticCurveTo(c[2], c[3], c[4], c[5]);
+    ctx.strokeStyle = l.kind === 'shelter' ? INK : 'rgba(19,36,18,.45)';
+    ctx.lineWidth = l.kind === 'shelter' ? 2.2 : 3; ctx.lineCap = 'round';
+    ctx.setLineDash(l.kind === 'shelter' ? [12, 10] : [0.1, 9]);
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; return;
+  }
+  const pts = sample(c, 40), L = pts[pts.length - 1][2];
+  const GAPD = 11, speed = 150, T = L / speed, PAUSE = .45, GROW = .8, cyc = T + PAUSE + GROW;
+  const tt = reduceMotion || op < .97 ? -1 : ((now / 1000 + l.off) % cyc);
+  let eaten = 0, grow = 1, pac = null;
+  if (tt >= 0){
+    if (tt < T){ eaten = tt / T * L; pac = at(pts, eaten); pac.push(1); }
+    else if (tt < T + PAUSE){ eaten = L + 1; pac = at(pts, L); pac.push(1 - (tt - T) / PAUSE); }
+    else { grow = (tt - T - PAUSE) / GROW; }
+  }
+  ctx.fillStyle = INK;
+  for (let d = GAPD / 2; d < L; d += GAPD){
+    if (d < eaten) continue;
+    let r = 2.4;
+    if (grow < 1){ const k = Math.min(1, Math.max(0, grow * 1.3 - d / L * .3)); if (d / L > k) continue; r *= Math.min(1, (k - d / L) * 6 + .3); }
+    const p = at(pts, d); ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 6.2832); ctx.fill();
+  }
+  if (pac){
+    const [px, py, ang, s] = pac, R = 11 * (0.4 + .6 * s);
+    const mouth = (.08 + .32 * Math.abs(Math.sin(now / 90))) * Math.PI;
+    ctx.globalAlpha = op * Math.min(1, s * 1.5);
+    ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.moveTo(px, py); ctx.arc(px, py, R, ang + mouth, ang - mouth + Math.PI * 2); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawCross(A, B, now, lt = .5){
+  const op = Math.min(A.op, B.op); if (op < .3) return;
+  const c = curveBetween(A, B, .12);
+  ctx.globalAlpha = op * .8;
+  ctx.strokeStyle = ORANGE; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+  ctx.setLineDash([2, 12]); ctx.lineDashOffset = reduceMotion ? 0 : -now / 40;
+  ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.quadraticCurveTo(c[2], c[3], c[4], c[5]); ctx.stroke();
+  ctx.setLineDash([]); ctx.lineDashOffset = 0;
+  const u = 1 - lt, mx = u*u * c[0] + 2*u*lt * c[2] + lt*lt * c[4], my = u*u * c[1] + 2*u*lt * c[3] + lt*lt * c[5];
+  ctx.font = '600 20px Inter, system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const label = 'same species: ' + SP[A.id].common, tw = ctx.measureText(label).width + 26;
+  ctx.fillStyle = ORANGE; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(mx - tw / 2, my - 17, tw, 34, 17); else ctx.rect(mx - tw / 2, my - 17, tw, 34); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillText(label, mx, my + 1);
+  ctx.globalAlpha = 1;
+}
+function drawMindmapLines(n){
+  const mm = n.mm, e = easeOut(mm.t); if (mm.t < .01) return;
+  const [x, y] = nodeWorld(n);
+  ctx.globalAlpha = Math.min(1, mm.t * 1.4);
+  ctx.strokeStyle = 'rgba(255,105,37,.75)'; ctx.lineWidth = 2;
+  mm.items.forEach(it => {
+    const p = it.parent;
+    const ax = p ? x + p.ox * e : x, ay = p ? y + p.oy * e : y;
+    let bx = x + it.ox * e, by = y + it.oy * e;
+    const sx = p ? ax : ax + (bx - ax) * (n.size * .4 / Math.hypot(bx - ax, by - ay));
+    const sy = p ? ay : ay + (by - ay) * (n.size * .4 / Math.hypot(bx - ax, by - ay));
+    ctx.beginPath(); ctx.moveTo(sx, sy);
+    const mx = (sx + bx) / 2, my = p ? by : (sy + by) / 2;
+    ctx.quadraticCurveTo(mx, my, bx, by); ctx.stroke();
+    if (p){ ctx.fillStyle = ORANGE; ctx.beginPath(); ctx.arc(bx, by, 3, 0, 6.2832); ctx.fill(); }
+  });
+  ctx.globalAlpha = 1;
+}
+const easeOut = t => { const c1 = 1.4, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+
+// ---------- animation loop ----------
+let last = performance.now();
+layout(); webs.forEach(w => { w.x = w.tx; w.y = w.ty; }); fitStart(); cam.x = cam.tx; cam.y = cam.ty; cam.s = cam.ts;
+function frame(now){
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  if (!act || act.kind !== 'grey' || !act.moved) if (!pinch) clampCam();
+  const camK = 1 - Math.pow(.0009, dt * (reduceMotion ? 3 : 1));
+  cam.x += (cam.tx - cam.x) * camK; cam.y += (cam.ty - cam.y) * camK; cam.s += (cam.ts - cam.s) * camK;
+  world.style.transform = `translate(${cam.x}px,${cam.y}px) scale(${cam.s})`;
+  const ds = 16 * cam.s;
+  stage.style.backgroundSize = ds + 'px ' + ds + 'px';
+  stage.style.backgroundPosition = cam.x + 'px ' + cam.y + 'px';
+
+  const K = reduceMotion ? 400 : 170, C = reduceMotion ? 40 : 19;
+  webs.forEach(w => {
+    if (!(act && act.moved && act.kind === 'field' && act.w === w)){
+      w.vx += ((w.tx - w.x) * 60 - w.vx * 13) * dt; w.x += w.vx * dt;
+      w.vy += ((w.ty - w.y) * 60 - w.vy * 13) * dt; w.y += w.vy * dt;
+    }
+    w.vrx += ((w.trx - w.rx) * 90 - w.vrx * 13) * dt; w.rx += w.vrx * dt;
+    w.vry += ((w.try - w.ry) * 90 - w.vry * 13) * dt; w.ry += w.vry * dt;
+    const indH = w.headings.ind; indH.x = 0; indH.y = -(IND_SIZE / 2) * w.ind.sc - 70;
+    Object.values(w.headings).forEach(h => {
+      h.op += (h.top - h.op) * Math.min(1, dt * 6);
+      h.el.style.opacity = h.op.toFixed(3);
+      h.el.style.transform = `translate(${w.x + h.x}px,${w.y + h.y}px)${h.center ? ' translateX(-50%)' : ''} scale(${.85 + .15 * h.op})`;
+    });
+  });
+  nodes.forEach(n => {
+    const dragging = act && act.moved && act.kind === 'node' && act.n === n;
+    if (now >= n.delayUntil && !dragging){
+      n.vx += ((n.tpx - n.px) * K - n.vx * C) * dt; n.px += n.vx * dt;
+      n.vy += ((n.tpy - n.py) * K - n.vy * C) * dt; n.py += n.vy * dt;
+      n.vs += ((n.tsc - n.sc) * K - n.vs * (C - 4)) * dt; n.sc += n.vs * dt;
+      n.op += (n.top - n.op) * Math.min(1, dt * (n.top ? 7 : 10));
+    }
+    const vis = n.op > .01;
+    n.el.style.visibility = vis ? 'visible' : 'hidden';
+    if (vis){
+      const [x, y] = nodeWorld(n);
+      n.el.style.opacity = n.op.toFixed(3);
+      n.el.style.transform = `translate(${x - n.size / 2}px,${y - n.size / 2}px) scale(${Math.max(.05, n.sc)})`;
+    }
+    n.el.tabIndex = n.top ? 0 : -1;
+    // mind map labels
+    if (n.mm){
+      const mm = n.mm;
+      mm.t += ((mm.target) - mm.t) * Math.min(1, dt * (mm.target ? 5 : 8));
+      if (!mm.target && mm.t < .01){ mm.items.forEach(i => i.el.remove()); n.mm = null; }
+      else {
+        const [x, y] = nodeWorld(n), e = easeOut(mm.t);
+        mm.items.forEach((it, i) => {
+          const tr = it.anchor === 'l' ? 'translate(0,-50%)' : it.anchor === 'r' ? 'translate(-100%,-50%)' : 'translate(-50%,-50%)';
+          it.el.style.opacity = Math.min(1, mm.t * 1.3).toFixed(3);
+          it.el.style.transform = `translate(${x + it.ox * e}px,${y + it.oy * e}px) ${tr}`;
+        });
+      }
+    }
+  });
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(DPR * cam.s, 0, 0, DPR * cam.s, DPR * cam.x, DPR * cam.y);
+  const t = reduceMotion ? 0 : now / 1000;
+  ctx.fillStyle = '#FEFFDC';
+  webs.forEach(w => { blobPath(w, t); ctx.fill(); });
+  webs.forEach(w => w.links.forEach(l => drawLink(l, now)));
+  nodes.forEach(n => { if (n.mm) drawMindmapLines(n); });
+  sharedGroups.forEach((list, gi) => { const v = list.filter(n => n.op > .3); for (let i = 0; i < v.length - 1; i++) drawCross(v[i], v[i + 1], now, [.5, .32, .68][gi % 3]); });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+
+</body>
+</html>
